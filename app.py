@@ -4,13 +4,31 @@ import re
 app = Flask(__name__)
 
 
-def check_release_gate(data):
-    violations = []
+@app.route("/")
+def home():
+    return "Release Gate is running"
+
+
+@app.route("/release-gate", methods=["POST"])
+def release_gate():
+
+    data = request.get_json(silent=True)
+
+    if not isinstance(data, dict):
+        return jsonify({
+            "decision": "block",
+            "violations": []
+        })
 
     workflow = data.get("workflow", {})
     image = data.get("image", {})
 
-    # 1. Permissions must be exactly least privilege
+    violations = []
+
+    # ---------------------------------
+    # 1. Permissions
+    # ---------------------------------
+
     expected_permissions = {
         "contents": "read",
         "packages": "write",
@@ -20,90 +38,98 @@ def check_release_gate(data):
     if workflow.get("permissions") != expected_permissions:
         violations.append("EXCESS_PERMISSION")
 
-    # 2. Pull request must use pull_request
+    # ---------------------------------
+    # 2. Pull request trigger
+    # ---------------------------------
+
     if data.get("event") == "pull_request":
         if workflow.get("trigger") != "pull_request":
             violations.append("UNSAFE_PR_TRIGGER")
 
-    # 3. Tests must pass, matrix complete, failFast false
-    if (
-        workflow.get("testsPassed") is not True
-        or workflow.get("matrixComplete") is not True
-        or workflow.get("failFast") is not False
-    ):
+    # ---------------------------------
+    # 3. Tests
+    # ---------------------------------
+
+    if workflow.get("testsPassed") is not True:
         violations.append("TESTS_INCOMPLETE")
 
-    # 4. Check GitHub Actions pinning
+    elif workflow.get("matrixComplete") is not True:
+        violations.append("TESTS_INCOMPLETE")
+
+    elif workflow.get("failFast") is not False:
+        violations.append("TESTS_INCOMPLETE")
+
+    # ---------------------------------
+    # 4. Actions
+    # ---------------------------------
+
     for action in workflow.get("actions", []):
-        owner = action.get("owner", "")
+
+        owner = action.get("owner")
         ref = action.get("ref", "")
 
         if owner == "actions":
-            # Official actions may use tags such as v4
             continue
 
-        # Third-party actions must use exactly 40 lowercase hex chars
         if not re.fullmatch(r"[0-9a-f]{40}", ref):
             violations.append("MUTABLE_ACTION")
             break
 
-    # 5. Docker image must be multi-stage
+    # ---------------------------------
+    # 5. Docker image
+    # ---------------------------------
+
     if image.get("multiStage") is not True:
         violations.append("SINGLE_STAGE_IMAGE")
 
-    # 6. Docker image must run as non-root
     if image.get("runsAsRoot") is not False:
         violations.append("ROOT_RUNTIME")
 
-    # 7. Secrets must not be copied into image layers
-    if image.get("secretMode") not in ("none", "buildkit"):
+    if image.get("secretMode") not in ["none", "buildkit"]:
         violations.append("SECRET_IN_LAYER")
 
-    # 8. No critical vulnerabilities
     if image.get("criticalVulnerabilities") != 0:
         violations.append("CRITICAL_CVE")
 
-    # 9. Image must be digest pinned
     if image.get("digestPinned") is not True:
         violations.append("UNPINNED_IMAGE")
 
-    # 10. Production must be push to main
+    # ---------------------------------
+    # 6. Production
+    # ---------------------------------
+
     if data.get("target") == "production":
+
         if (
             data.get("event") != "push"
             or data.get("ref") != "refs/heads/main"
         ):
             violations.append("INVALID_PRODUCTION_REF")
 
-        # 11. Production approval
         if workflow.get("environmentApproval") is not True:
             violations.append("APPROVAL_REQUIRED")
 
-    decision = "promote" if not violations else "block"
+    # Remove duplicates
+    violations = list(dict.fromkeys(violations))
 
-    return {
-        "decision": decision,
-        "violations": violations
-    }
-
-
-@app.route("/release-gate", methods=["POST"])
-def release_gate():
-    data = request.get_json(silent=True)
-
-    if not isinstance(data, dict):
+    if violations:
         return jsonify({
             "decision": "block",
-            "violations": ["TESTS_INCOMPLETE"]
-        }), 400
+            "violations": violations
+        })
 
-    return jsonify(check_release_gate(data))
-
-
-@app.route("/")
-def home():
-    return "Release Gate API is running"
+    return jsonify({
+        "decision": "promote",
+        "violations": []
+    })
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    import os
+
+    port = int(os.environ.get("PORT", 5000))
+
+    app.run(
+        host="0.0.0.0",
+        port=port
+    )
