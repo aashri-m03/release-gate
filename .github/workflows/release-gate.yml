@@ -15,7 +15,17 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: TDS identity: 24f2005960@ds.study.iitm.ac.in
+      steps:
+  - name: "TDS identity: 24f2005960@ds.study.iitm.ac.in"
+    run: echo "TDS identity verified"
+
+  - name: Checkout
+    uses: actions/checkout@v4
+
+  - name: Set up Python
+    uses: actions/setup-python@v5
+    with:
+      python-version: "3.12"
         run: echo "TDS identity verified"
 
       - name: Checkout
